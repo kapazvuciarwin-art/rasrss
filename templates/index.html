@@ -119,14 +119,73 @@
             color: #888;
         }
         .github-hint a { color: #6ea8fe; }
+        .provider-option {
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 12px 16px;
+            background: rgba(0,0,0,0.15);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 8px;
+            cursor: pointer;
+            margin-bottom: 10px;
+        }
+        .provider-option:hover { border-color: rgba(170,204,255,0.5); }
+        .provider-option input { margin-top: 3px; }
+        .provider-option.selected { border-color: #aaccff; background: rgba(68,102,238,0.15); }
+        .provider-label strong { display: block; color: #ddd; }
+        .provider-label small { color: #888; font-size: 0.85rem; }
+        .api-settings-row { margin-top: 14px; }
+        .api-status-msg { margin-top: 10px; font-size: 0.9rem; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>📻 rasrss － RSS 日文逐字稿</h1>
         <p style="text-align: center; color: #888; margin-bottom: 24px;">
-            輸入 RSS 連結並選擇週期，系統會定期抓取最新 MP3，以 AI 產生日文逐字稿（一字不漏、不摘要），並顯示於此與 GitHub Pages。
+            輸入 RSS 連結並選擇週期，系統會定期取得最新 MP3 連結並傳給 AI API 產生日文逐字稿（一字不漏、不摘要），不下載 MP3。逐字稿顯示於此與 GitHub Pages。
         </p>
+
+        <div class="card">
+            <h2>🔑 AI API 設定</h2>
+            <p style="color: #888; font-size: 0.9rem; margin-bottom: 14px;">
+                選擇 AI 提供者並輸入 API Key 後儲存。<strong>日文逐字稿使用 AI Studio（Gemini）</strong>，請務必填寫 Gemini API Key。Gemini 優先 3.0 Flash 相關 → 2.5 → 2.0；OpenRouter 自動選免費中最好的模型。
+            </p>
+            <div class="form-group">
+                <label>選擇 API 提供者</label>
+                <label class="provider-option" id="provider-option-gemini">
+                    <input type="radio" name="api_provider" value="gemini">
+                    <span class="provider-label">
+                        <strong>AI Studio（Gemini）</strong>
+                        <small>優先 3.0 Flash 相關 → 2.5 → 2.0</small>
+                    </span>
+                </label>
+                <label class="provider-option" id="provider-option-openrouter">
+                    <input type="radio" name="api_provider" value="openrouter">
+                    <span class="provider-label">
+                        <strong>OpenRouter</strong>
+                        <small>自動選免費中最好的模型</small>
+                    </span>
+                </label>
+            </div>
+            <div id="api-key-area-gemini" class="api-settings-row">
+                <div class="form-group">
+                    <label>Gemini API Key</label>
+                    <input type="password" id="gemini_api_key" placeholder="AI Studio 取得：https://aistudio.google.com/apikey">
+                </div>
+            </div>
+            <div id="api-key-area-openrouter" class="api-settings-row" style="display: none;">
+                <div class="form-group">
+                    <label>OpenRouter API Key</label>
+                    <input type="password" id="openrouter_api_key" placeholder="https://openrouter.ai/keys">
+                </div>
+            </div>
+            <div class="form-row" style="margin-top: 14px;">
+                <button type="button" class="btn btn-primary" onclick="saveApiSettings()">儲存 API 設定</button>
+                <button type="button" class="btn btn-secondary" onclick="testApiConnection()">測試連線</button>
+            </div>
+            <div id="api-settings-msg" class="api-status-msg"></div>
+        </div>
 
         <div class="card">
             <h2>新增 RSS 訂閱</h2>
@@ -188,6 +247,61 @@
         const detailDate = document.getElementById('transcript-detail-date');
         const detailBody = document.getElementById('transcript-detail-body');
 
+        function getApiProvider() { return document.querySelector('input[name="api_provider"]:checked')?.value || 'gemini'; }
+        function setApiProviderUI() {
+            const p = getApiProvider();
+            document.getElementById('api-key-area-gemini').style.display = p === 'gemini' ? 'block' : 'none';
+            document.getElementById('api-key-area-openrouter').style.display = p === 'openrouter' ? 'block' : 'none';
+            document.getElementById('provider-option-gemini').classList.toggle('selected', p === 'gemini');
+            document.getElementById('provider-option-openrouter').classList.toggle('selected', p === 'openrouter');
+        }
+        document.querySelectorAll('input[name="api_provider"]').forEach(el => el.addEventListener('change', setApiProviderUI));
+
+        async function loadApiSettings() {
+            try {
+                const r = await fetch('/api/settings');
+                const d = await r.json();
+                document.querySelector('input[name="api_provider"][value="' + (d.api_provider || 'gemini') + '"]').checked = true;
+                setApiProviderUI();
+                if (d.has_gemini_key) document.getElementById('gemini_api_key').placeholder = '（已儲存）可留空或重新輸入覆蓋';
+                if (d.has_openrouter_key) document.getElementById('openrouter_api_key').placeholder = '（已儲存）可留空或重新輸入覆蓋';
+            } catch (e) { console.warn('loadApiSettings', e); }
+        }
+        async function saveApiSettings() {
+            const msgEl = document.getElementById('api-settings-msg');
+            const provider = getApiProvider();
+            const body = {
+                api_provider: provider,
+                gemini_api_key: document.getElementById('gemini_api_key').value.trim(),
+                openrouter_api_key: document.getElementById('openrouter_api_key').value.trim()
+            };
+            if (!body.gemini_api_key && !body.openrouter_api_key) { msgEl.innerHTML = '<span class="msg error">請至少輸入一個 API Key（產生日文逐字稿需 Gemini）</span>'; return; }
+            try {
+                const r = await fetch('/api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                const d = await r.json();
+                if (r.ok && d.success) { msgEl.innerHTML = '<span class="msg success">已儲存</span>'; loadApiSettings(); }
+                else msgEl.innerHTML = '<span class="msg error">' + (d.error || '儲存失敗') + '</span>';
+            } catch (e) { msgEl.innerHTML = '<span class="msg error">' + e.message + '</span>'; }
+        }
+        async function testApiConnection() {
+            const msgEl = document.getElementById('api-settings-msg');
+            const provider = getApiProvider();
+            const body = {
+                api_provider: provider,
+                gemini_api_key: document.getElementById('gemini_api_key').value.trim(),
+                openrouter_api_key: document.getElementById('openrouter_api_key').value.trim()
+            };
+            if (provider === 'gemini' && !body.gemini_api_key) { msgEl.innerHTML = '<span class="msg error">請先輸入並儲存 Gemini API Key</span>'; return; }
+            if (provider === 'openrouter' && !body.openrouter_api_key) { msgEl.innerHTML = '<span class="msg error">請先輸入並儲存 OpenRouter API Key</span>'; return; }
+            msgEl.innerHTML = '<span class="msg info">測試中…</span>';
+            try {
+                const r = await fetch('/api/ai-test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+                const d = await r.json();
+                if (r.ok && d.success) msgEl.innerHTML = '<span class="msg success">連線成功（' + (d.model || '') + '）</span>';
+                else msgEl.innerHTML = '<span class="msg error">' + (d.error || '連線失敗') + '</span>';
+            } catch (e) { msgEl.innerHTML = '<span class="msg error">' + e.message + '</span>'; }
+        }
+
         function showAddMsg(text, type) {
             addMsg.innerHTML = '<div class="msg ' + type + '">' + text + '</div>';
             setTimeout(() => { addMsg.innerHTML = ''; }, 5000);
@@ -204,8 +318,9 @@
                 : feeds.map(f => {
                     const scheduleLabel = { hourly: '每小時', '6hours': '每6小時', daily: '每日', weekly: '每週' };
                     const key = Object.entries({ 60: 'hourly', 360: '6hours', 1440: 'daily', 10080: 'weekly' }).find(([m]) => parseInt(m) === f.schedule_minutes)?.[1] || 'daily';
+                    const errHtml = f.last_error ? '<br><span class="msg error" style="display:inline-block;margin-top:6px;font-size:0.85rem;">轉錄失敗: ' + (f.last_error || '').slice(0, 120) + '</span>' : '';
                     return '<li>' +
-                        '<div><span class="feed-title">' + (f.title || f.rss_url) + '</span><br><span class="feed-meta">' + (scheduleLabel[key] || '每日') + ' · 上次執行: ' + (f.last_run_at || '尚未') + '</span></div>' +
+                        '<div><span class="feed-title">' + (f.title || f.rss_url) + '</span><br><span class="feed-meta">' + (scheduleLabel[key] || '每日') + ' · 上次執行: ' + (f.last_run_at || '尚未') + '</span>' + errHtml + '</div>' +
                         '<div><button class="btn btn-success btn-small" onclick="runNow(' + f.id + ')">立即執行</button> <button class="btn btn-danger btn-small" onclick="deleteFeed(' + f.id + ')">刪除</button></div>' +
                         '</li>';
                 }).join('');
@@ -263,7 +378,7 @@
             });
             const data = await res.json();
             if (res.ok && data.success) {
-                showAddMsg('已新增訂閱。系統會依週期自動抓取最新 MP3 並產生日文逐字稿。', 'success');
+                showAddMsg('已新增訂閱。系統會依週期將最新 MP3 連結傳給 AI API 產生日文逐字稿。', 'success');
                 document.getElementById('rss_url').value = '';
                 loadFeeds();
             } else {
@@ -274,6 +389,8 @@
         filterFeed.addEventListener('change', loadTranscripts);
 
         document.addEventListener('DOMContentLoaded', () => {
+            setApiProviderUI();
+            loadApiSettings();
             loadFeeds();
             loadTranscripts();
         });

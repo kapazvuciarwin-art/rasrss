@@ -1,10 +1,10 @@
-"""rasrss - RSS 訂閱 → 定期抓取最新 MP3 → AI 日文逐字稿 → 介面與 GitHub Pages"""
+"""rasrss - RSS 訂閱 → 定期將最新 MP3 連結傳給 AI API → 日文逐字稿 → 介面與 GitHub Pages"""
 
 import os
 import re
 import sqlite3
-import tempfile
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -13,7 +13,6 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
-from openai import OpenAI
 from git import Repo
 
 load_dotenv()
@@ -32,7 +31,29 @@ SCHEDULE_OPTIONS = [
     ("weekly", 10080, "每週"),
 ]
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+# 逐字稿使用 AI Studio Gemini（下載 MP3 後上傳給 Gemini 轉錄）
+# AI Studio Gemini：優先 3.0 Flash 相關，再 2.5、2.0
+GEMINI_MODEL_PRIORITY = [
+    "gemini-3.0-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.5-flash",
+    "gemini-2.0-flash",
+]
+
+# OpenRouter：免費模型中自動選最好的（依序嘗試）
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_FREE_MODELS = [
+    "google/gemini-2.0-flash-001:free",
+    "deepseek/deepseek-r1:free",
+    "deepseek/deepseek-chat:free",
+    "qwen/qwen3-14b:free",
+    "qwen/qwen3-32b:free",
+    "meta-llama/llama-4-scout:free",
+    "meta-llama/llama-3.2-3b-instruct:free",
+    "mistralai/mistral-7b-instruct:free",
+    "microsoft/phi-3-mini-128k-instruct:free",
+]
 
 
 def get_db():
@@ -50,9 +71,18 @@ def init_db():
             title TEXT,
             schedule_minutes INTEGER NOT NULL DEFAULT 1440,
             last_run_at TEXT,
+            last_error TEXT,
             created_at TEXT NOT NULL
         )
     """)
+    # 升級：若舊表沒有 last_error 則新增
+    try:
+        cursor = conn.execute("PRAGMA table_info(feeds)")
+        cols = [r[1] for r in cursor.fetchall()]
+        if "last_error" not in cols:
+            conn.execute("ALTER TABLE feeds ADD COLUMN last_error TEXT")
+    except Exception:
+        pass
     conn.execute("""
         CREATE TABLE IF NOT EXISTS transcripts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +102,9 @@ def init_db():
             PRIMARY KEY (feed_id, mp3_url),
             FOREIGN KEY (feed_id) REFERENCES feeds(id)
         )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)
     """)
     conn.commit()
     conn.close()
@@ -125,29 +158,133 @@ def mark_processed(feed_id, mp3_url):
     conn.close()
 
 
-def download_mp3(mp3_url):
+def _get_setting(key):
+    conn = get_db()
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    conn.close()
+    return row["value"] if row else None
+
+
+def _set_setting(key, value):
+    conn = get_db()
+    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value or ""))
+    conn.commit()
+    conn.close()
+
+
+def call_gemini(api_key, prompt):
+    """AI Studio Gemini：優先 3.0 Flash 相關，再 2.5、2.0。"""
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        raise RuntimeError("請安裝：pip install google-generativeai")
+    genai.configure(api_key=api_key)
+    last_err = None
+    for model_name in GEMINI_MODEL_PRIORITY:
+        try:
+            model = genai.GenerativeModel(model_name)
+            r = model.generate_content(prompt)
+            return (r.text or "").strip(), model_name
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"Gemini 無可用模型：{last_err}")
+
+
+def call_openrouter(api_key, prompt):
+    """OpenRouter：自動選免費中最好的模型（依序嘗試）。"""
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:5001",
+        "X-Title": "rasrss",
+    }
+    last_err = None
+    for model in OPENROUTER_FREE_MODELS:
+        try:
+            r = requests.post(
+                OPENROUTER_API_URL,
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.7,
+                },
+                timeout=60,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if "choices" in data and data["choices"]:
+                    text = data["choices"][0].get("message", {}).get("content", "")
+                    return (text or "").strip(), model
+            last_err = r.text or str(r.status_code)
+        except Exception as e:
+            last_err = str(e)
+            continue
+    raise RuntimeError(f"OpenRouter 無可用模型：{last_err}")
+
+
+def _get_gemini_key():
+    """Gemini Key：優先 .env GEMINI_API_KEY，其次介面儲存的設定。"""
+    key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not key:
+        key = (_get_setting("gemini_api_key") or "").strip()
+    return key or None
+
+
+def _download_mp3(mp3_url):
+    """下載 MP3 到暫存檔，回傳路徑。呼叫方須負責刪除。"""
     r = requests.get(mp3_url, timeout=120, stream=True)
     r.raise_for_status()
-    ext = ".mp3"
-    fd, path = tempfile.mkstemp(suffix=ext)
-    with os.fdopen(fd, "wb") as f:
+    tmpdir = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
+    path = os.path.join(tmpdir, f"rasrss_{os.getpid()}_{time.time():.0f}.mp3")
+    with open(path, "wb") as f:
         for chunk in r.iter_content(chunk_size=65536):
             if chunk:
                 f.write(chunk)
     return path
 
 
-def transcribe_japanese_whisper(file_path):
-    """使用 OpenAI Whisper 產生日文逐字稿，要求完整一字不漏、不摘要。"""
-    client = OpenAI(api_key=OPENAI_API_KEY)
-    with open(file_path, "rb") as f:
-        transcript = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=f,
-            language="ja",
-            response_format="text",
-        )
-    return (transcript or "").strip()
+def transcribe_japanese_with_gemini(mp3_url):
+    """用 AI Studio Gemini 產生日文逐字稿：下載 MP3 → 上傳 Gemini → 完整一字不漏、不摘要。"""
+    key = _get_gemini_key()
+    if not key:
+        raise ValueError("請在「AI API 設定」中選擇 AI Studio（Gemini）並輸入、儲存 Gemini API Key")
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        raise RuntimeError("請安裝：pip install google-generativeai")
+    genai.configure(api_key=key)
+    tmp_path = None
+    try:
+        tmp_path = _download_mp3(mp3_url)
+        # 上傳音訊給 Gemini
+        audio_file = genai.upload_file(tmp_path, mime_type="audio/mpeg")
+        # 輪詢直到處理完成
+        for _ in range(60):
+            if audio_file.state.name == "ACTIVE":
+                break
+            if audio_file.state.name == "FAILED":
+                raise RuntimeError(audio_file.state.name or "上傳失敗")
+            time.sleep(2)
+        prompt = "此為日文音訊。請產出完整逐字稿，一字不漏、不摘要，只輸出日文文字，不要其他說明。"
+        last_err = None
+        for model_name in GEMINI_MODEL_PRIORITY:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([audio_file, prompt])
+                if response.text:
+                    return (response.text or "").strip()
+            except Exception as e:
+                last_err = e
+                continue
+        raise RuntimeError(f"Gemini 無可用模型：{last_err}")
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def safe_filename(s):
@@ -193,19 +330,21 @@ def run_feed_job(feed_id):
         return
     if already_processed(feed_id, mp3_url):
         return
-    tmp_path = None
     try:
-        tmp_path = download_mp3(mp3_url)
-        transcript_text = transcribe_japanese_whisper(tmp_path)
+        transcript_text = transcribe_japanese_with_gemini(mp3_url)
     except Exception as e:
-        print(f"[rasrss] feed {feed_id} 轉錄失敗: {e}")
+        err_msg = str(e)
+        print(f"[rasrss] feed {feed_id} 轉錄失敗: {err_msg}")
+        conn = get_db()
+        conn.execute("UPDATE feeds SET last_error = ? WHERE id = ?", (err_msg, feed_id))
+        conn.commit()
+        conn.close()
         return
-    finally:
-        if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    # 成功則清除錯誤
+    conn = get_db()
+    conn.execute("UPDATE feeds SET last_error = NULL WHERE id = ?", (feed_id,))
+    conn.commit()
+    conn.close()
     now = datetime.utcnow().isoformat() + "Z"
     conn = get_db()
     conn.execute(
@@ -265,11 +404,20 @@ def index():
 @app.route("/api/feeds", methods=["GET"])
 def list_feeds():
     conn = get_db()
-    rows = conn.execute(
-        "SELECT id, rss_url, title, schedule_minutes, last_run_at, created_at FROM feeds ORDER BY id DESC"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT id, rss_url, title, schedule_minutes, last_run_at, last_error, created_at FROM feeds ORDER BY id DESC"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            "SELECT id, rss_url, title, schedule_minutes, last_run_at, created_at FROM feeds ORDER BY id DESC"
+        ).fetchall()
     conn.close()
-    return jsonify([dict(r) for r in rows])
+    out = [dict(r) for r in rows]
+    for r in out:
+        if "last_error" not in r:
+            r["last_error"] = None
+    return jsonify(out)
 
 
 @app.route("/api/feeds", methods=["POST"])
@@ -351,11 +499,70 @@ def run_now(feed_id):
     return jsonify({"success": True, "message": "已排入執行"})
 
 
+@app.route("/api/settings", methods=["GET"])
+def get_settings():
+    """取得 API 設定（僅回傳 provider 與是否已設定 key，不回傳明文 key）。"""
+    provider = _get_setting("api_provider") or "gemini"
+    has_gemini = bool(_get_setting("gemini_api_key"))
+    has_openrouter = bool(_get_setting("openrouter_api_key"))
+    return jsonify({
+        "api_provider": provider,
+        "has_gemini_key": has_gemini,
+        "has_openrouter_key": has_openrouter,
+    })
+
+
+@app.route("/api/settings", methods=["POST"])
+def save_settings():
+    """儲存 API 設定（provider 與 key）；key 留空則不覆蓋既有值。"""
+    data = request.get_json() or {}
+    provider = (data.get("api_provider") or "gemini").strip().lower()
+    if provider not in ("gemini", "openrouter"):
+        provider = "gemini"
+    _set_setting("api_provider", provider)
+    gemini_key = (data.get("gemini_api_key") or "").strip()
+    openrouter_key = (data.get("openrouter_api_key") or "").strip()
+    if gemini_key:
+        _set_setting("gemini_api_key", gemini_key)
+    if openrouter_key:
+        _set_setting("openrouter_api_key", openrouter_key)
+    return jsonify({"success": True, "api_provider": provider})
+
+
+@app.route("/api/ai-test", methods=["POST"])
+def ai_test():
+    """測試 AI API 連線（傳入的 key 優先，否則用已儲存的 key）。"""
+    data = request.get_json() or {}
+    provider = (data.get("api_provider") or "gemini").strip().lower()
+    if provider not in ("gemini", "openrouter"):
+        return jsonify({"success": False, "error": "請選擇 Gemini 或 OpenRouter"}), 400
+    if provider == "gemini":
+        key = (data.get("gemini_api_key") or "").strip() or _get_setting("gemini_api_key")
+        if not key:
+            return jsonify({"success": False, "error": "請輸入或先儲存 Gemini API Key"}), 400
+        try:
+            text, model = call_gemini(key, "回覆：OK")
+            return jsonify({"success": True, "model": model, "message": "連線成功"})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+    else:
+        key = (data.get("openrouter_api_key") or "").strip() or _get_setting("openrouter_api_key")
+        if not key:
+            return jsonify({"success": False, "error": "請輸入或先儲存 OpenRouter API Key"}), 400
+        try:
+            text, model = call_openrouter(key, "回覆：OK")
+            return jsonify({"success": True, "model": model, "message": "連線成功"})
+        except Exception as e:
+            return jsonify({"success": False, "error": str(e)}), 400
+
+
 def main():
     init_db()
     scheduler = BackgroundScheduler()
     scheduler.add_job(scheduler_tick, "interval", minutes=5)
     scheduler.start()
+    print("\n請在瀏覽器開啟： http://127.0.0.1:5001")
+    print("或從其他裝置：   http://<此機IP>:5001\n")
     try:
         app.run(host="0.0.0.0", port=5001, debug=True)
     finally:

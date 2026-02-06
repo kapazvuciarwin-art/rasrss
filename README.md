@@ -1,18 +1,18 @@
 # rasrss
 
-依 RSS 訂閱定期抓取最新 MP3，以 AI（OpenAI Whisper）產生日文逐字稿（完整、一字不漏、不摘要），並顯示於網頁介面與同步至 GitHub Pages。
+依 RSS 訂閱定期取得最新 MP3 **連結**，將連結直接傳給 AI API（AssemblyAI）產生日文逐字稿（完整、一字不漏、不摘要），並顯示於網頁介面與同步至 GitHub Pages。**程式不下載 MP3**，只傳連結給 API。
 
 ## 功能
 
 - 輸入 RSS 連結（需包含 MP3 的節目）
 - 選擇產生逐字稿週期：每小時、每 6 小時、每日、每週
-- 系統定期抓取該 RSS 最新一則 MP3，呼叫 Whisper API 產生日文逐字稿
+- 系統定期從 RSS 取得最新一則的 **MP3 連結**，將連結傳給 AI API 產生日文逐字稿（不下載 MP3）
 - 逐字稿顯示於本機網頁介面，並寫入 `docs/transcripts/` 後 push 到 GitHub（可搭配 GitHub Pages 公開）
 
 ## 環境需求
 
 - Python 3.10+
-- OpenAI API Key（用於 Whisper 語音轉文字）
+- AssemblyAI API Key（用於「傳 MP3 連結給 API」產生日文逐字稿）
 
 ## 安裝
 
@@ -20,14 +20,14 @@
 cd rasrss
 pip install -r requirements.txt
 cp .env.example .env
-# 編輯 .env，填入 OPENAI_API_KEY
+# 編輯 .env，填入 ASSEMBLYAI_API_KEY
 ```
 
 ## 設定
 
-1. **OpenAI API Key**  
-   在 `.env` 中設定 `OPENAI_API_KEY`。取得方式：<https://platform.openai.com/api-keys>  
-   Whisper 用於將 MP3 轉成日文逐字稿（一字不漏、不摘要）。
+1. **AssemblyAI API Key**  
+   在 `.env` 中設定 `ASSEMBLYAI_API_KEY`。取得方式：<https://www.assemblyai.com/>  
+   程式會將 MP3 連結直接傳給 AssemblyAI API，由 API 端處理音訊並回傳日文逐字稿（一字不漏、不摘要）。
 
 2. **GitHub 連動（選用）**  
    - 專案需為 git repo 且已設定 `origin` 遠端。  
@@ -49,7 +49,7 @@ python app.py
 
 ## 專案結構
 
-- `app.py`：Flask 後端、排程、RSS 解析、MP3 下載、Whisper 轉錄、Git push
+- `app.py`：Flask 後端、排程、RSS 解析、將 MP3 連結傳給 AI API（AssemblyAI）轉錄、Git push
 - `templates/index.html`：使用者介面（輸入 RSS、選週期、顯示逐字稿）
 - `docs/`：GitHub Pages 來源目錄；`docs/transcripts/` 存放逐字稿 Markdown
 - `rasrss.db`：SQLite 資料庫（訂閱與逐字稿紀錄，本機使用）
