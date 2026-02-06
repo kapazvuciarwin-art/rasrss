@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>rasrss － RSS 日文逐字稿</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+            background: linear-gradient(145deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            color: #e8e8e8;
+            padding: 24px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        h1 {
+            text-align: center;
+            margin-bottom: 24px;
+            font-weight: 700;
+            color: #eee;
+        }
+        .card {
+            background: rgba(255,255,255,0.06);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid rgba(255,255,255,0.08);
+        }
+        .card h2 {
+            margin-bottom: 16px;
+            font-size: 1.1rem;
+            color: #aaccff;
+        }
+        .form-group {
+            margin-bottom: 14px;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 6px;
+            color: #bbb;
+            font-size: 0.9rem;
+        }
+        .form-group input, .form-group select {
+            width: 100%;
+            padding: 10px 14px;
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            background: rgba(0,0,0,0.2);
+            color: #fff;
+            font-size: 1rem;
+        }
+        .form-group input::placeholder {
+            color: #888;
+        }
+        .form-row { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; }
+        .form-row .form-group { flex: 1; min-width: 200px; }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #4361ee 0%, #3a0ca3 100%);
+            color: #fff;
+        }
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-secondary { background: #495057; color: #fff; }
+        .btn-danger { background: #dc3545; color: #fff; }
+        .btn-success { background: #28a745; color: #fff; }
+        .btn-small { padding: 6px 12px; font-size: 0.85rem; }
+        .feeds-list { list-style: none; }
+        .feeds-list li {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .feeds-list li:last-child { border-bottom: none; }
+        .feed-title { font-weight: 600; color: #ccc; }
+        .feed-meta { font-size: 0.85rem; color: #888; }
+        .transcript-list { list-style: none; }
+        .transcript-list li {
+            padding: 14px 0;
+            border-bottom: 1px solid rgba(255,255,255,0.06);
+        }
+        .transcript-list li:last-child { border-bottom: none; }
+        .transcript-title { font-weight: 600; margin-bottom: 4px; color: #ddd; }
+        .transcript-date { font-size: 0.8rem; color: #888; margin-bottom: 8px; }
+        .transcript-preview {
+            font-size: 0.9rem;
+            color: #aaa;
+            max-height: 4em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .transcript-full {
+            white-space: pre-wrap;
+            line-height: 1.7;
+            padding: 20px;
+            background: rgba(0,0,0,0.25);
+            border-radius: 8px;
+            margin-top: 12px;
+            color: #e0e0e0;
+        }
+        .msg { padding: 12px; border-radius: 8px; margin-bottom: 12px; }
+        .msg.error { background: rgba(220,53,69,0.2); color: #f8a0a0; }
+        .msg.success { background: rgba(40,167,69,0.2); color: #90ee90; }
+        .msg.info { background: rgba(0,120,255,0.15); color: #aaccff; }
+        .github-hint {
+            margin-top: 16px;
+            font-size: 0.9rem;
+            color: #888;
+        }
+        .github-hint a { color: #6ea8fe; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📻 rasrss － RSS 日文逐字稿</h1>
+        <p style="text-align: center; color: #888; margin-bottom: 24px;">
+            輸入 RSS 連結並選擇週期，系統會定期抓取最新 MP3，以 AI 產生日文逐字稿（一字不漏、不摘要），並顯示於此與 GitHub Pages。
+        </p>
+
+        <div class="card">
+            <h2>新增 RSS 訂閱</h2>
+            <div id="add-msg"></div>
+            <form id="add-feed-form">
+                <div class="form-group">
+                    <label>RSS 連結（需包含 MP3 的節目）</label>
+                    <input type="url" id="rss_url" placeholder="https://example.com/feed.xml" required>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>產生逐字稿週期</label>
+                        <select id="schedule">
+                            {% for key, minutes, label in schedule_options %}
+                            <option value="{{ key }}">{{ label }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex: 0;">
+                        <button type="submit" class="btn btn-primary">新增訂閱</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+
+        <div class="card">
+            <h2>我的 RSS 訂閱</h2>
+            <ul class="feeds-list" id="feeds-list"></ul>
+        </div>
+
+        <div class="card">
+            <h2>逐字稿列表</h2>
+            <div class="form-group">
+                <label>篩選訂閱來源</label>
+                <select id="filter-feed">
+                    <option value="">全部</option>
+                </select>
+            </div>
+            <ul class="transcript-list" id="transcript-list"></ul>
+        </div>
+
+        <div class="card" id="transcript-detail-card" style="display: none;">
+            <h2 id="transcript-detail-title"></h2>
+            <p id="transcript-detail-date" class="transcript-date"></p>
+            <div id="transcript-detail-body" class="transcript-full"></div>
+            <p class="github-hint">
+                逐字稿會同步寫入本專案 <code>docs/transcripts/</code> 並 push 到 GitHub；若已啟用 GitHub Pages（來源：main / docs），可於站上查看。
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const filterFeed = document.getElementById('filter-feed');
+        const feedsList = document.getElementById('feeds-list');
+        const transcriptList = document.getElementById('transcript-list');
+        const addMsg = document.getElementById('add-msg');
+        const detailCard = document.getElementById('transcript-detail-card');
+        const detailTitle = document.getElementById('transcript-detail-title');
+        const detailDate = document.getElementById('transcript-detail-date');
+        const detailBody = document.getElementById('transcript-detail-body');
+
+        function showAddMsg(text, type) {
+            addMsg.innerHTML = '<div class="msg ' + type + '">' + text + '</div>';
+            setTimeout(() => { addMsg.innerHTML = ''; }, 5000);
+        }
+
+        async function loadFeeds() {
+            const res = await fetch('/api/feeds');
+            const feeds = await res.json();
+            filterFeed.innerHTML = '<option value="">全部</option>' + feeds.map(f => 
+                '<option value="' + f.id + '">' + (f.title || f.rss_url) + '</option>'
+            ).join('');
+            feedsList.innerHTML = feeds.length === 0 
+                ? '<li class="feed-meta">尚無訂閱，請在上方新增 RSS。</li>' 
+                : feeds.map(f => {
+                    const scheduleLabel = { hourly: '每小時', '6hours': '每6小時', daily: '每日', weekly: '每週' };
+                    const key = Object.entries({ 60: 'hourly', 360: '6hours', 1440: 'daily', 10080: 'weekly' }).find(([m]) => parseInt(m) === f.schedule_minutes)?.[1] || 'daily';
+                    return '<li>' +
+                        '<div><span class="feed-title">' + (f.title || f.rss_url) + '</span><br><span class="feed-meta">' + (scheduleLabel[key] || '每日') + ' · 上次執行: ' + (f.last_run_at || '尚未') + '</span></div>' +
+                        '<div><button class="btn btn-success btn-small" onclick="runNow(' + f.id + ')">立即執行</button> <button class="btn btn-danger btn-small" onclick="deleteFeed(' + f.id + ')">刪除</button></div>' +
+                        '</li>';
+                }).join('');
+        }
+
+        async function loadTranscripts() {
+            const feedId = filterFeed.value || '';
+            const url = feedId ? '/api/transcripts?feed_id=' + feedId : '/api/transcripts';
+            const res = await fetch(url);
+            const list = await res.json();
+            transcriptList.innerHTML = list.length === 0 
+                ? '<li class="transcript-date">尚無逐字稿。</li>' 
+                : list.map(t => {
+                    const preview = (t.transcript_text || '').slice(0, 120) + ((t.transcript_text || '').length > 120 ? '…' : '');
+                    return '<li>' +
+                        '<div class="transcript-title">' + (t.episode_title || 'Episode') + '</div>' +
+                        '<div class="transcript-date">' + t.created_at + '</div>' +
+                        '<div class="transcript-preview">' + preview + '</div>' +
+                        '<button class="btn btn-secondary btn-small" style="margin-top:8px" onclick="viewTranscript(' + t.id + ')">查看完整逐字稿</button>' +
+                        '</li>';
+                }).join('');
+        }
+
+        async function viewTranscript(id) {
+            const res = await fetch('/api/transcripts/' + id);
+            const t = await res.json();
+            detailTitle.textContent = t.episode_title || '逐字稿';
+            detailDate.textContent = t.created_at;
+            detailBody.textContent = t.transcript_text || '';
+            detailCard.style.display = 'block';
+            detailCard.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        async function deleteFeed(id) {
+            if (!confirm('確定要刪除此訂閱？')) return;
+            await fetch('/api/feeds/' + id, { method: 'DELETE' });
+            loadFeeds();
+            loadTranscripts();
+        }
+
+        async function runNow(id) {
+            await fetch('/api/run-now/' + id, { method: 'POST' });
+            showAddMsg('已排入執行，請稍候重新整理逐字稿列表。', 'info');
+            setTimeout(loadTranscripts, 15000);
+        }
+
+        document.getElementById('add-feed-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const rss_url = document.getElementById('rss_url').value.trim();
+            const schedule = document.getElementById('schedule').value;
+            const res = await fetch('/api/feeds', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rss_url, schedule })
+            });
+            const data = await res.json();
+            if (res.ok && data.success) {
+                showAddMsg('已新增訂閱。系統會依週期自動抓取最新 MP3 並產生日文逐字稿。', 'success');
+                document.getElementById('rss_url').value = '';
+                loadFeeds();
+            } else {
+                showAddMsg(data.error || '新增失敗', 'error');
+            }
+        });
+
+        filterFeed.addEventListener('change', loadTranscripts);
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadFeeds();
+            loadTranscripts();
+        });
+    </script>
+</body>
+</html>
