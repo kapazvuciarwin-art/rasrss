@@ -62,4 +62,5 @@ python app.py
   1. 寫入 `docs/transcripts/<檔名>.md`
   2. `git add`、`git commit`、`git push` 到 `origin`
 
-啟用 GitHub Pages 後，訪客可從 `https://<username>.github.io/<repo>/` 看到 `docs/index.html`，並從 `docs/transcripts/` 進入各逐字稿。
+啟用 GitHub Pages 後，訪客可從 `https://<username>.github.io/<repo>/` 看到 `docs/index.html`，並從 `docs/transcripts/` 進入各逐字稿
+
