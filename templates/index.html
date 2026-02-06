@@ -137,6 +137,23 @@
         .provider-label small { color: #888; font-size: 0.85rem; }
         .api-settings-row { margin-top: 14px; }
         .api-status-msg { margin-top: 10px; font-size: 0.9rem; }
+        .furigana-pop {
+            position: fixed;
+            z-index: 9999;
+            display: none;
+            max-width: min(420px, 85vw);
+            padding: 8px 10px;
+            border-radius: 10px;
+            background: rgba(10, 12, 18, 0.92);
+            border: 1px solid rgba(255,255,255,0.14);
+            color: #eaeaea;
+            font-size: 0.95rem;
+            line-height: 1.2;
+            box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+            backdrop-filter: blur(6px);
+        }
+        .furigana-pop .w { color: #bcd7ff; font-weight: 700; }
+        .furigana-pop .r { color: #eaeaea; }
     </style>
 </head>
 <body>
@@ -237,6 +254,8 @@
         </div>
     </div>
 
+    <div id="furigana-pop" class="furigana-pop" role="status" aria-live="polite"></div>
+
     <script>
         const filterFeed = document.getElementById('filter-feed');
         const feedsList = document.getElementById('feeds-list');
@@ -246,6 +265,10 @@
         const detailTitle = document.getElementById('transcript-detail-title');
         const detailDate = document.getElementById('transcript-detail-date');
         const detailBody = document.getElementById('transcript-detail-body');
+        const furiganaPop = document.getElementById('furigana-pop');
+        let furiganaAbort = null;
+        let currentWord = null;
+        let currentReading = null;
 
         function getApiProvider() { return document.querySelector('input[name="api_provider"]:checked')?.value || 'gemini'; }
         function setApiProviderUI() {
@@ -351,8 +374,195 @@
             detailDate.textContent = t.created_at;
             detailBody.textContent = t.transcript_text || '';
             detailCard.style.display = 'block';
+            hideFurigana();
             detailCard.scrollIntoView({ behavior: 'smooth' });
         }
+
+        function hideFurigana() {
+            if (furiganaAbort) { try { furiganaAbort.abort(); } catch (e) {} }
+            furiganaAbort = null;
+            currentWord = null;
+            currentReading = null;
+            furiganaPop.style.display = 'none';
+            furiganaPop.textContent = '';
+            furiganaPop.removeAttribute('data-mode');
+        }
+
+        function escapeHtml(s) {
+            return (s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+        }
+
+        function isJapaneseChar(ch) {
+            // Hiragana, Katakana, Kanji, prolonged sound mark, iteration marks
+            return /[\u3040-\u30FF\u3400-\u9FFF\uF900-\uFAFF\u30FC\u3005]/.test(ch);
+        }
+
+        function hasKanji(s) {
+            return /[\u3400-\u9FFF\uF900-\uFAFF]/.test(s || '');
+        }
+
+        function pickWordFromTextNode(text, offset) {
+            if (!text) return '';
+            const i = Math.min(Math.max(offset, 0), Math.max(text.length - 1, 0));
+
+            // 1) 優先用瀏覽器的日文斷詞（更精確，不會一次抓一大串）
+            try {
+                if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+                    const seg = new Intl.Segmenter('ja', { granularity: 'word' });
+                    for (const part of seg.segment(text)) {
+                        const start = part.index;
+                        const end = start + part.segment.length;
+                        if (i >= start && i < end) {
+                            const w = (part.segment || '').trim();
+                            if (!w) return '';
+                            if (!hasKanji(w)) return ''; // 只對「含漢字的詞」顯示讀音
+                            return w.length > 24 ? w.slice(0, 24) : w;
+                        }
+                    }
+                }
+            } catch (e) {
+                // ignore and fallback
+            }
+
+            // 2) fallback：簡易規則（避免一次抓到整句）
+            let j = i;
+            if (j > 0 && !isJapaneseChar(text[j]) && isJapaneseChar(text[j - 1])) j = j - 1;
+            if (!isJapaneseChar(text[j])) return '';
+            let l = j, r = j;
+            // 句讀點/空白/括號等直接截斷
+            const stopRe = /[\s\u3000、。．，,\.\(\)\[\]「」『』【】＜＞<>]/;
+            while (l > 0 && isJapaneseChar(text[l - 1]) && !stopRe.test(text[l - 1])) l--;
+            while (r < text.length && isJapaneseChar(text[r]) && !stopRe.test(text[r])) r++;
+            let w = text.slice(l, r).trim();
+            // 再限縮：只保留前後最多 16 字，避免超長連續字串
+            if (w.length > 16) w = w.slice(0, 16);
+            if (!hasKanji(w)) return '';
+            return w;
+        }
+
+        function caretRangeFromPoint(x, y) {
+            if (document.caretRangeFromPoint) return document.caretRangeFromPoint(x, y);
+            if (document.caretPositionFromPoint) {
+                const pos = document.caretPositionFromPoint(x, y);
+                if (!pos) return null;
+                const range = document.createRange();
+                range.setStart(pos.offsetNode, pos.offset);
+                range.setEnd(pos.offsetNode, pos.offset);
+                return range;
+            }
+            return null;
+        }
+
+        async function showFuriganaAt(x, y, word) {
+            if (!word) return;
+            hideFurigana();
+            currentWord = word;
+            furiganaPop.style.left = Math.min(x + 12, window.innerWidth - 30) + 'px';
+            furiganaPop.style.top = Math.min(y + 8, window.innerHeight - 30) + 'px';
+            furiganaPop.style.display = 'block';
+            furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(…)</span>`;
+
+            furiganaAbort = new AbortController();
+            try {
+                const res = await fetch('/api/furigana?text=' + encodeURIComponent(word), { signal: furiganaAbort.signal });
+                const data = await res.json();
+                if (!data || !data.ok) {
+                    furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(查詢失敗)</span>`;
+                    return;
+                }
+                currentReading = (data.reading || '').trim() || '無';
+                furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(${escapeHtml(currentReading)})</span>`;
+            } catch (e) {
+                if (e.name === 'AbortError') return;
+                furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(查詢失敗)</span>`;
+            }
+        }
+
+        async function addCurrentWordToRasword() {
+            const addAreaId = 'furigana-add-status';
+            let statusEl = document.getElementById(addAreaId);
+            if (!currentWord) return;
+            if (!statusEl) {
+                statusEl = document.createElement('div');
+                statusEl.id = addAreaId;
+                statusEl.style.marginTop = '6px';
+                statusEl.style.fontSize = '0.8rem';
+                furiganaPop.appendChild(statusEl);
+            }
+            statusEl.textContent = 'rasword 新增中…';
+            try {
+                const res = await fetch('/api/rasword/add-word', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ word: currentWord })
+                });
+                const data = await res.json();
+                if (!res.ok || !data.ok) {
+                    statusEl.textContent = '❌ 新增失敗：' + (data.error || '未知錯誤');
+                    return;
+                }
+                const w = data.word || {};
+                const brief = (w.chinese_short || '').trim() || (w.chinese_meaning || '').slice(0, 18);
+                if (data.exists) {
+                    statusEl.textContent = '✅ 已在 rasword：' + (brief || '已存在單字');
+                } else {
+                    statusEl.textContent = '✅ 已新增到 rasword：' + (brief || '已建立單字');
+                }
+            } catch (e) {
+                statusEl.textContent = '❌ 新增失敗：' + e.message;
+            }
+        }
+
+        // 點擊逐字稿文字：顯示 (振假名)
+        detailBody.addEventListener('click', (ev) => {
+            const range = caretRangeFromPoint(ev.clientX, ev.clientY);
+            if (!range) return;
+            const node = range.startContainer;
+            if (!node || node.nodeType !== Node.TEXT_NODE) return;
+            const word = pickWordFromTextNode(node.textContent || '', range.startOffset);
+            if (!word) return;
+            showFuriganaAt(ev.clientX, ev.clientY, word);
+        });
+
+        // 點擊假名小視窗：進一步詢問是否新增到 rasword（y / n）
+        furiganaPop.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            if (!currentWord) return;
+            const mode = furiganaPop.getAttribute('data-mode') || 'reading';
+            if (mode === 'reading') {
+                const reading = currentReading || '…';
+                furiganaPop.setAttribute('data-mode', 'confirm');
+                furiganaPop.innerHTML = `
+                    <div>
+                        <div class="w">${escapeHtml(currentWord)}</div>
+                        <div class="r">(${escapeHtml(reading)})</div>
+                        <div style="margin-top:4px;font-size:0.85rem;color:#ccc;">要新增到 rasword 單字庫嗎？</div>
+                        <div style="margin-top:6px;display:flex;gap:8px;">
+                            <button type="button" data-choice="y" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#fff;cursor:pointer;">y</button>
+                            <button type="button" data-choice="n" style="padding:4px 10px;border-radius:6px;border:none;background:#6b7280;color:#fff;cursor:pointer;">n</button>
+                        </div>
+                        <div id="furigana-add-status" style="margin-top:6px;font-size:0.8rem;"></div>
+                    </div>
+                `;
+                return;
+            }
+            const target = ev.target;
+            if (target && target.dataset && target.dataset.choice) {
+                const choice = target.dataset.choice;
+                if (choice === 'y') {
+                    addCurrentWordToRasword();
+                } else if (choice === 'n') {
+                    hideFurigana();
+                }
+            }
+        });
+
+        // 點其他地方就關掉
+        document.addEventListener('click', (ev) => {
+            if (ev.target === detailBody || detailBody.contains(ev.target)) return;
+            if (ev.target === furiganaPop || furiganaPop.contains(ev.target)) return;
+            hideFurigana();
+        });
 
         async function deleteFeed(id) {
             if (!confirm('確定要刪除此訂閱？')) return;

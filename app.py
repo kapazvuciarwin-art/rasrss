@@ -56,6 +56,31 @@ OPENROUTER_FREE_MODELS = [
     "microsoft/phi-3-mini-128k-instruct:free",
 ]
 
+# rasword 單字庫服務：預設跑在本機 5000 port，可用環境變數覆蓋
+RASWORD_BASE_URL = os.getenv("RASWORD_BASE_URL", "http://127.0.0.1:5000")
+
+_KAKASI = None
+
+
+def to_furigana(text: str) -> str:
+    """
+    將日文（含漢字）轉成假名（平假名為主）。
+    需求：點擊詞彙後顯示振假名讀音。
+    """
+    global _KAKASI
+    if not text:
+        return ""
+    if _KAKASI is None:
+        from pykakasi import kakasi  # lazy import，避免沒裝時影響其他功能
+
+        k = kakasi()
+        k.setMode("J", "H")  # Kanji -> Hiragana
+        k.setMode("K", "H")  # Katakana -> Hiragana
+        k.setMode("H", "H")  # Hiragana -> Hiragana
+        k.setMode("r", "Hepburn")  # not used, but keeps default stable
+        _KAKASI = k.getConverter()
+    return (_KAKASI.do(text) or "").strip()
+
 
 def get_db():
     conn = sqlite3.connect(DATABASE)
@@ -535,6 +560,144 @@ def get_transcript(tid):
     if not row:
         return jsonify({"error": "找不到逐字稿"}), 404
     return jsonify(dict(row))
+
+
+@app.route("/api/furigana", methods=["GET"])
+def api_furigana():
+    """
+    query:
+      - text: 想查讀音的詞（通常為點擊到的日文字串）
+    """
+    text = (request.args.get("text") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "error": "missing text"}), 400
+    # 避免過長輸入造成浪費
+    if len(text) > 80:
+        text = text[:80]
+    reading = to_furigana(text)
+    return jsonify({"ok": True, "text": text, "reading": reading})
+
+
+@app.route("/api/rasword/add-word", methods=["POST"])
+def api_rasword_add_word():
+    """
+    將逐字稿中點擊到的日文詞，透過 rasword 服務
+    （先檢查是否已存在，如無則呼叫 AI 生成並寫入 rasword 的資料庫）。
+    回傳：
+      - ok: bool
+      - exists: 是否原本就存在於 rasword
+      - created: 是否這次有新建
+      - word: 簡要資訊（japanese_word / kana_form / kanji_form / chinese_short / chinese_meaning）
+    """
+    data = request.get_json() or {}
+    word = (data.get("word") or "").strip()
+    if not word:
+        return jsonify({"ok": False, "error": "missing word"}), 400
+
+    base = (RASWORD_BASE_URL or "").rstrip("/")
+    if not base:
+        return jsonify({"ok": False, "error": "RASWORD_BASE_URL 未設定"}), 500
+
+    # 1) 先檢查 rasword 是否已存在該單字
+    try:
+        check_resp = requests.post(
+            f"{base}/api/words/check",
+            json={"japanese_word": word},
+            timeout=15,
+        )
+        if check_resp.status_code == 200:
+            payload = check_resp.json()
+            if payload.get("exists"):
+                w = payload.get("word") or {}
+                brief = {
+                    "japanese_word": w.get("japanese_word") or word,
+                    "kana_form": w.get("kana_form") or "",
+                    "kanji_form": w.get("kanji_form") or "",
+                    "chinese_short": w.get("chinese_short") or "",
+                    "chinese_meaning": "",
+                }
+                return jsonify(
+                    {"ok": True, "exists": True, "created": False, "word": brief}
+                )
+    except Exception as e:
+        # 檢查失敗不致命，繼續嘗試生成
+        print(f"[rasrss] rasword /api/words/check 失敗: {e}")
+
+    # 2) 呼叫 rasword 的 /api/generate，用 rasword 內建的 GEMINI_API_KEY
+    try:
+        gen_resp = requests.post(
+            f"{base}/api/generate",
+            json={"japanese_word": word, "api_provider": "gemini"},
+            timeout=90,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"呼叫 rasword /api/generate 失敗: {e}"}), 502
+
+    try:
+        gen_data = gen_resp.json()
+    except Exception:
+        gen_data = {}
+
+    if not gen_resp.ok or gen_data.get("error"):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": gen_data.get("error")
+                    or f"rasword /api/generate 失敗（HTTP {gen_resp.status_code}）",
+                }
+            ),
+            502,
+        )
+
+    # 3) 將生成結果寫入 rasword 的 /api/words
+    add_payload = {
+        "japanese_word": word,
+        "part_of_speech": gen_data.get("part_of_speech", ""),
+        "sentence1": gen_data.get("sentence1", ""),
+        "sentence2": gen_data.get("sentence2", ""),
+        "chinese_meaning": gen_data.get("chinese_meaning", ""),
+        "chinese_short": gen_data.get("chinese_short", ""),
+        "jlpt_level": gen_data.get("jlpt_level", ""),
+        "kana_form": gen_data.get("kana_form", ""),
+        "kanji_form": gen_data.get("kanji_form", ""),
+        "common_form": gen_data.get("common_form", "kanji"),
+    }
+
+    try:
+        add_resp = requests.post(
+            f"{base}/api/words",
+            json=add_payload,
+            timeout=30,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": f"呼叫 rasword /api/words 失敗: {e}"}), 502
+
+    try:
+        add_json = add_resp.json()
+    except Exception:
+        add_json = {}
+
+    if not add_resp.ok or not add_json.get("success"):
+        return (
+            jsonify(
+                {
+                    "ok": False,
+                    "error": add_json.get("error")
+                    or f"rasword /api/words 新增失敗（HTTP {add_resp.status_code}）",
+                }
+            ),
+            502,
+        )
+
+    brief = {
+        "japanese_word": word,
+        "kana_form": gen_data.get("kana_form", ""),
+        "kanji_form": gen_data.get("kanji_form", ""),
+        "chinese_short": gen_data.get("chinese_short", ""),
+        "chinese_meaning": gen_data.get("chinese_meaning", ""),
+    }
+    return jsonify({"ok": True, "exists": False, "created": True, "word": brief})
 
 
 @app.route("/api/run-now/<int:feed_id>", methods=["POST"])
