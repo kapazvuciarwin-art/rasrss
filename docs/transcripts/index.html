@@ -5,10 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>逐字稿列表 | rasrss</title>
     <style>
-        body { font-family: sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-        h1 { margin-bottom: 0.5rem; }
-        p { color: #555; }
-        a { color: #0366d6; }
+        :root { --bg: #1a1a1e; --text: #e4e4e7; --muted: #a1a1aa; --link: #7dd3fc; --link-hover: #bae6fd; }
+        body { font-family: sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; background: var(--bg); color: var(--text); min-height: 100vh; }
+        h1 { margin-bottom: 0.5rem; color: var(--text); }
+        p { color: var(--muted); }
+        a { color: var(--link); text-decoration: none; }
+        a:hover { color: var(--link-hover); }
         ul { list-style: none; padding: 0; }
         ul li { margin: 0.5rem 0; }
     </style>
