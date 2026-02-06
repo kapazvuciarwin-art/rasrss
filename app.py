@@ -662,6 +662,7 @@ def api_rasword_add_word():
         "kana_form": gen_data.get("kana_form", ""),
         "kanji_form": gen_data.get("kanji_form", ""),
         "common_form": gen_data.get("common_form", "kanji"),
+        "source": "transcript",  # 從逐字稿新增
     }
 
     try:
