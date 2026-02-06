@@ -32,7 +32,13 @@ cp .env.example .env
 2. **GitHub 連動（選用）**  
    - 專案需為 git repo 且已設定 `origin` 遠端。  
    - 每次產生新逐字稿會寫入 `docs/transcripts/*.md` 並自動 commit + push。  
-   - 若要在 GitHub 上公開：到 repo 的 Settings → Pages → Source 選「Deploy from a branch」→ Branch 選 `main`，Folder 選 `/docs`，即可用 GitHub Pages 顯示 `docs/` 內容（含逐字稿）。
+   - 若要在 GitHub 上公開：到 repo 的 **Settings → Pages**，Source 選「Deploy from a branch」→ Branch 選 `main`，Folder 選 `/docs`，儲存後約 1～3 分鐘即可用 **https://&lt;你的帳號&gt;.github.io/rasrss/** 查看。  
+   - 詳細圖文步驟見：**[docs/GITHUB_PAGES_設定教學.md](docs/GITHUB_PAGES_設定教學.md)**。
+
+3. **未來編輯如何記錄到 GitHub**  
+   - 專案已連結遠端：`git@github.com:kapazvuciarwin-art/rasrss.git`（`origin`）。  
+   - 編輯完成後，在專案目錄執行：`git add .` → `git commit -m "說明"` → `git push origin main`，即可將變更推送到 GitHub。  
+   - 程式產生的新逐字稿會自動寫入 `docs/transcripts/` 並由 app 自動 commit + push。
 
 ## 使用方式
 

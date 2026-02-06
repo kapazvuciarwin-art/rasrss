@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 
 import feedparser
 import requests
@@ -293,6 +294,45 @@ def safe_filename(s):
     return (s or "episode")[:120]
 
 
+def write_transcripts_index():
+    """掃描 docs/transcripts/*.md 並寫入 index.html，避免 GitHub Pages 點目錄 404。"""
+    index_path = os.path.join(PAGES_DIR, "index.html")
+    md_files = sorted(
+        [f for f in os.listdir(PAGES_DIR) if f.endswith(".md")],
+        key=lambda x: x,
+        reverse=True,
+    )
+    lines = [
+        "<!DOCTYPE html>",
+        '<html lang="zh-TW">',
+        "<head>",
+        '  <meta charset="UTF-8">',
+        '  <meta name="viewport" content="width=device-width, initial-scale=1.0">',
+        "  <title>逐字稿列表 | rasrss</title>",
+        "  <style>",
+        "    body { font-family: sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }",
+        "    h1 { margin-bottom: 0.5rem; }",
+        "    p { color: #555; }",
+        "    a { color: #0366d6; }",
+        "    ul { list-style: none; padding: 0; }",
+        "    ul li { margin: 0.5rem 0; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <h1>📻 逐字稿列表</h1>",
+        '  <p><a href="../">← 回 rasrss 首頁</a></p>',
+        "  <ul>",
+    ]
+    for f in md_files:
+        name = f[:-3]  # 去掉 .md
+        href = quote(f)
+        lines.append(f'    <li><a href="{href}">{name}</a></li>')
+    lines.extend(["  </ul>", "</body>", "</html>"])
+    with open(index_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    return index_path
+
+
 def push_transcript_to_github(title, transcript_text, episode_slug):
     """將逐字稿寫入 docs/transcripts 並 push 到 origin（若為同一 repo）。"""
     Path(PAGES_DIR).mkdir(parents=True, exist_ok=True)
@@ -302,11 +342,13 @@ def push_transcript_to_github(title, transcript_text, episode_slug):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(f"# {title}\n\n")
         f.write(transcript_text)
+    write_transcripts_index()
+    index_rel = os.path.relpath(os.path.join(PAGES_DIR, "index.html"), REPO_ROOT)
     try:
         repo = Repo(REPO_ROOT)
         if repo.bare or not repo.remotes:
             return False, "本地非 git 或無遠端"
-        repo.index.add([rel_path])
+        repo.index.add([rel_path, index_rel])
         repo.index.commit(f"transcript: {filename}")
         origin = repo.remotes.origin
         origin.push()
