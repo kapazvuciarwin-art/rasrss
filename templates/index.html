@@ -87,19 +87,28 @@
         .feed-meta { font-size: 0.85rem; color: #888; }
         .transcript-list { list-style: none; }
         .transcript-list li {
-            padding: 14px 0;
+            padding: 0;
             border-bottom: 1px solid rgba(255,255,255,0.06);
         }
         .transcript-list li:last-child { border-bottom: none; }
-        .transcript-title { font-weight: 600; margin-bottom: 4px; color: #ddd; }
-        .transcript-date { font-size: 0.8rem; color: #888; margin-bottom: 8px; }
-        .transcript-preview {
-            font-size: 0.9rem;
-            color: #aaa;
-            max-height: 4em;
-            overflow: hidden;
-            text-overflow: ellipsis;
+        .transcript-row-btn {
+            display: block;
+            width: 100%;
+            padding: 10px 12px;
+            text-align: left;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: #ddd;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
         }
+        .transcript-row-btn:hover {
+            background: rgba(255,255,255,0.08);
+            color: #fff;
+        }
+        .transcript-date { font-size: 0.8rem; color: #888; margin-bottom: 8px; }
         .transcript-full {
             white-space: pre-wrap;
             line-height: 1.7;
@@ -154,12 +163,26 @@
         }
         .furigana-pop .w { color: #bcd7ff; font-weight: 700; }
         .furigana-pop .r { color: #eaeaea; }
+        .furigana-extend-btn {
+            margin-left: 6px; padding: 2px 6px; border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 4px; background: rgba(255,255,255,0.1); color: #eaeaea;
+            font-size: 0.9rem; cursor: pointer;
+        }
+        .furigana-extend-btn:hover { background: rgba(255,255,255,0.2); }
+        .furigana-extend-results { margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,0.1); font-size: 0.9rem; color: #aaa; }
+        .furigana-extend-results .item { margin: 4px 0; cursor: pointer; padding: 4px 6px; border-radius: 4px; }
+        .furigana-extend-results .item:hover { background: rgba(255,255,255,0.1); color: #eaeaea; }
         .transcript-audio-wrap {
             margin: 12px 0;
             padding: 14px;
-            background: rgba(0,0,0,0.25);
             border-radius: 8px;
             border: 1px solid rgba(255,255,255,0.1);
+            background: #1a1a2e;
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            border-bottom: 1px solid rgba(255,255,255,0.08);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
         }
         .audio-controls {
             display: flex;
@@ -260,6 +283,11 @@
                     <option value="">全部</option>
                 </select>
             </div>
+            <div id="transcript-list-day-nav" style="margin-bottom: 12px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+                <button type="button" class="btn btn-secondary btn-small" id="transcript-prev-day" title="前一天">← 前一天</button>
+                <span id="transcript-list-day-label" style="font-weight: 600; color: #ccc; min-width: 80px;"></span>
+                <button type="button" class="btn btn-secondary btn-small" id="transcript-next-day" title="後一天">後一天 →</button>
+            </div>
             <ul class="transcript-list" id="transcript-list"></ul>
         </div>
 
@@ -297,6 +325,8 @@
         let furiganaAbort = null;
         let currentWord = null;
         let currentReading = null;
+        let currentContextText = '';
+        let currentContextOffset = 0;
 
         function getApiProvider() { return document.querySelector('input[name="api_provider"]:checked')?.value || 'gemini'; }
         function setApiProviderUI() {
@@ -377,23 +407,87 @@
                 }).join('');
         }
 
+        function shortLabel(t) {
+            const program = (t.episode_title || '').split('_')[0] || 'Episode';
+            let dateStr = '';
+            if (t.created_at) {
+                const d = new Date(t.created_at);
+                dateStr = (d.getMonth() + 1) + '/' + d.getDate() + ' ' + d.getHours() + ':' + (d.getMinutes() < 10 ? '0' : '') + d.getMinutes();
+            }
+            return (program + ' ' + dateStr).trim();
+        }
+        function getDateKey(t) {
+            if (!t.created_at) return '';
+            const d = new Date(t.created_at);
+            const y = d.getFullYear(), m = d.getMonth() + 1, day = d.getDate();
+            return y + '-' + (m < 10 ? '0' : '') + m + '-' + (day < 10 ? '0' : '') + day;
+        }
+        function formatDayLabel(dateKey) {
+            if (!dateKey) return '';
+            const [y, m, d] = dateKey.split('-').map(Number);
+            return m + '月' + d + '日';
+        }
+        function escapeHtml(s) {
+            if (!s) return '';
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;');
+        }
+        let transcriptListData = [];
+        let transcriptDates = [];
+        let transcriptDayIndex = 0;
+        const dayNavEl = document.getElementById('transcript-list-day-nav');
+        const dayLabelEl = document.getElementById('transcript-list-day-label');
+        const prevDayBtn = document.getElementById('transcript-prev-day');
+        const nextDayBtn = document.getElementById('transcript-next-day');
+        function renderTranscriptListForDay() {
+            const list = transcriptListData;
+            if (list.length === 0) {
+                dayNavEl.style.display = 'none';
+                transcriptList.innerHTML = '<li class="transcript-date">尚無逐字稿。</li>';
+                return;
+            }
+            const dates = [...new Set(list.map(getDateKey))].filter(Boolean).sort().reverse();
+            transcriptDates = dates;
+            if (transcriptDayIndex >= dates.length) transcriptDayIndex = Math.max(0, dates.length - 1);
+            if (transcriptDayIndex < 0) transcriptDayIndex = 0;
+            const currentDate = dates[transcriptDayIndex] || dates[0];
+            const itemsForDay = list.filter(t => getDateKey(t) === currentDate);
+            dayNavEl.style.display = 'flex';
+            dayLabelEl.textContent = formatDayLabel(currentDate);
+            prevDayBtn.disabled = transcriptDayIndex >= dates.length - 1;
+            nextDayBtn.disabled = transcriptDayIndex <= 0;
+            transcriptList.innerHTML = itemsForDay.length === 0
+                ? '<li class="transcript-date">當日尚無逐字稿。</li>'
+                : itemsForDay.map(t => {
+                    const label = escapeHtml(shortLabel(t));
+                    return '<li><button type="button" class="transcript-row-btn" onclick="viewTranscript(' + t.id + ')">' + label + '</button></li>';
+                }).join('');
+        }
         async function loadTranscripts() {
             const feedId = filterFeed.value || '';
             const url = feedId ? '/api/transcripts?feed_id=' + feedId : '/api/transcripts';
             const res = await fetch(url);
             const list = await res.json();
-            transcriptList.innerHTML = list.length === 0 
-                ? '<li class="transcript-date">尚無逐字稿。</li>' 
-                : list.map(t => {
-                    const preview = (t.transcript_text || '').slice(0, 120) + ((t.transcript_text || '').length > 120 ? '…' : '');
-                    return '<li>' +
-                        '<div class="transcript-title">' + (t.episode_title || 'Episode') + '</div>' +
-                        '<div class="transcript-date">' + t.created_at + '</div>' +
-                        '<div class="transcript-preview">' + preview + '</div>' +
-                        '<button class="btn btn-secondary btn-small" style="margin-top:8px" onclick="viewTranscript(' + t.id + ')">查看完整逐字稿</button>' +
-                        '</li>';
-                }).join('');
+            transcriptListData = list;
+            transcriptDayIndex = 0;
+            renderTranscriptListForDay();
         }
+        prevDayBtn.addEventListener('click', function() {
+            if (transcriptDates.length === 0) return;
+            if (transcriptDayIndex < transcriptDates.length - 1) {
+                transcriptDayIndex++;
+                renderTranscriptListForDay();
+            }
+        });
+        nextDayBtn.addEventListener('click', function() {
+            if (transcriptDayIndex > 0) {
+                transcriptDayIndex--;
+                renderTranscriptListForDay();
+            }
+        });
 
         const audioWrap = document.getElementById('transcript-audio-wrap');
         const audioEl = document.getElementById('transcript-audio');
@@ -463,6 +557,8 @@
             furiganaAbort = null;
             currentWord = null;
             currentReading = null;
+            currentContextText = '';
+            currentContextOffset = 0;
             furiganaPop.style.display = 'none';
             furiganaPop.textContent = '';
             furiganaPop.removeAttribute('data-mode');
@@ -533,29 +629,97 @@
             return null;
         }
 
-        async function showFuriganaAt(x, y, word) {
+        function furiganaFirstLineHtml(word, reading, isPlaceholder) {
+            const r = reading != null ? reading : (isPlaceholder ? '…' : '無');
+            const extendBtn = (currentContextText !== '' && currentContextText.length > currentContextOffset + 1)
+                ? ` <button type="button" class="furigana-extend-btn" title="試試較長範圍">&gt;</button>`
+                : '';
+            return `<span class="w">${escapeHtml(word)}</span> <span class="r">(${escapeHtml(r)})</span>${extendBtn}`;
+        }
+
+        async function showFuriganaAt(x, y, word, contextText, contextOffset) {
             if (!word) return;
             hideFurigana();
             currentWord = word;
+            currentContextText = typeof contextText === 'string' ? contextText : '';
+            currentContextOffset = typeof contextOffset === 'number' ? contextOffset : 0;
             furiganaPop.style.left = Math.min(x + 12, window.innerWidth - 30) + 'px';
             furiganaPop.style.top = Math.min(y + 8, window.innerHeight - 30) + 'px';
             furiganaPop.style.display = 'block';
-            furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(…)</span>`;
+            furiganaPop.innerHTML = furiganaFirstLineHtml(word, null, true);
 
             furiganaAbort = new AbortController();
             try {
                 const res = await fetch('/api/furigana?text=' + encodeURIComponent(word), { signal: furiganaAbort.signal });
                 const data = await res.json();
                 if (!data || !data.ok) {
-                    furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(查詢失敗)</span>`;
+                    furiganaPop.innerHTML = furiganaFirstLineHtml(word, '查詢失敗', false);
                     return;
                 }
                 currentReading = (data.reading || '').trim() || '無';
-                furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(${escapeHtml(currentReading)})</span>`;
+                furiganaPop.innerHTML = furiganaFirstLineHtml(word, currentReading, false);
             } catch (e) {
                 if (e.name === 'AbortError') return;
-                furiganaPop.innerHTML = `<span class="w">${escapeHtml(word)}</span> <span class="r">(查詢失敗)</span>`;
+                furiganaPop.innerHTML = furiganaFirstLineHtml(word, '查詢失敗', false);
             }
+        }
+
+        async function extendFuriganaRange() {
+            if (!currentContextText || currentContextOffset < 0) return;
+            const text = currentContextText;
+            const offset = currentContextOffset;
+            const stopRe = /[\s\u3000、。．，,\.\(\)\[\]「」『』【】＜＞<>]/;
+            const maxLen = 10;
+            const candidates = [];
+            for (let len = 2; len <= maxLen && offset + len <= text.length; len++) {
+                const sub = text.slice(offset, offset + len);
+                if (stopRe.test(sub)) break;
+                if (sub.length > (currentWord || '').length) candidates.push(sub);
+            }
+            if (candidates.length === 0) return;
+            const container = document.getElementById('furigana-extend-results') || (function() {
+                const el = document.createElement('div');
+                el.id = 'furigana-extend-results';
+                el.className = 'furigana-extend-results';
+                furiganaPop.appendChild(el);
+                return el;
+            }());
+            container.innerHTML = '<span style="color:#888;">較長範圍：</span>';
+            for (const sub of candidates) {
+                try {
+                    const res = await fetch('/api/furigana?text=' + encodeURIComponent(sub));
+                    const data = await res.json();
+                    if (data && data.ok && data.reading) {
+                        const reading = (data.reading || '').trim();
+                        if (reading !== (currentReading || '')) {
+                            const item = document.createElement('div');
+                            item.className = 'item';
+                            item.setAttribute('data-word', sub);
+                            item.setAttribute('data-reading', reading);
+                            item.textContent = sub + ' (' + reading + ')';
+                            item.title = '點擊可新增此詞到 rasword';
+                            container.appendChild(item);
+                        }
+                    }
+                } catch (e) { /* skip */ }
+            }
+        }
+
+        function showConfirmAddToRasword() {
+            const reading = currentReading || '…';
+            furiganaPop.setAttribute('data-mode', 'confirm');
+            furiganaPop.innerHTML = `
+                <div>
+                    <div class="w">${escapeHtml(currentWord)}</div>
+                    <div class="r">(${escapeHtml(reading)})</div>
+                    <div style="margin-top:4px;font-size:0.85rem;color:#ccc;">要新增到 rasword 單字庫嗎？</div>
+                    <div style="margin-top:6px;display:flex;gap:8px;">
+                        <button type="button" data-choice="y" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#fff;cursor:pointer;">y</button>
+                        <button type="button" data-choice="n" style="padding:4px 10px;border-radius:6px;border:none;background:#6b7280;color:#fff;cursor:pointer;">n</button>
+                    </div>
+                    <div id="furigana-add-status" style="margin-top:6px;font-size:0.8rem;"></div>
+                </div>
+            `;
         }
 
         async function addCurrentWordToRasword() {
@@ -601,29 +765,27 @@
             if (!node || node.nodeType !== Node.TEXT_NODE) return;
             const word = pickWordFromTextNode(node.textContent || '', range.startOffset);
             if (!word) return;
-            showFuriganaAt(ev.clientX, ev.clientY, word);
+            showFuriganaAt(ev.clientX, ev.clientY, word, node.textContent || '', range.startOffset);
         });
 
-        // 點擊假名小視窗：進一步詢問是否新增到 rasword（y / n）
+        // 點擊假名小視窗：詢問是否新增到 rasword；「>」則較長範圍；較長範圍詞可點擊新增
         furiganaPop.addEventListener('click', (ev) => {
             ev.stopPropagation();
+            if (ev.target.closest('.furigana-extend-btn')) {
+                extendFuriganaRange();
+                return;
+            }
+            const extendItem = ev.target.closest('.furigana-extend-results .item');
+            if (extendItem && extendItem.dataset.word) {
+                currentWord = extendItem.dataset.word;
+                currentReading = (extendItem.dataset.reading || '').trim() || '…';
+                showConfirmAddToRasword();
+                return;
+            }
             if (!currentWord) return;
             const mode = furiganaPop.getAttribute('data-mode') || 'reading';
             if (mode === 'reading') {
-                const reading = currentReading || '…';
-                furiganaPop.setAttribute('data-mode', 'confirm');
-                furiganaPop.innerHTML = `
-                    <div>
-                        <div class="w">${escapeHtml(currentWord)}</div>
-                        <div class="r">(${escapeHtml(reading)})</div>
-                        <div style="margin-top:4px;font-size:0.85rem;color:#ccc;">要新增到 rasword 單字庫嗎？</div>
-                        <div style="margin-top:6px;display:flex;gap:8px;">
-                            <button type="button" data-choice="y" style="padding:4px 10px;border-radius:6px;border:none;background:#22c55e;color:#fff;cursor:pointer;">y</button>
-                            <button type="button" data-choice="n" style="padding:4px 10px;border-radius:6px;border:none;background:#6b7280;color:#fff;cursor:pointer;">n</button>
-                        </div>
-                        <div id="furigana-add-status" style="margin-top:6px;font-size:0.8rem;"></div>
-                    </div>
-                `;
+                showConfirmAddToRasword();
                 return;
             }
             const target = ev.target;
