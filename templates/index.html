@@ -154,6 +154,25 @@
         }
         .furigana-pop .w { color: #bcd7ff; font-weight: 700; }
         .furigana-pop .r { color: #eaeaea; }
+        .transcript-audio-wrap {
+            margin: 12px 0;
+            padding: 14px;
+            background: rgba(0,0,0,0.25);
+            border-radius: 8px;
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .audio-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .audio-controls .btn { flex-shrink: 0; }
+        .audio-time {
+            font-size: 0.9rem;
+            color: #aaa;
+            margin-left: 4px;
+        }
     </style>
 </head>
 <body>
@@ -247,6 +266,15 @@
         <div class="card" id="transcript-detail-card" style="display: none;">
             <h2 id="transcript-detail-title"></h2>
             <p id="transcript-detail-date" class="transcript-date"></p>
+            <div id="transcript-audio-wrap" class="transcript-audio-wrap" style="display: none;">
+                <audio id="transcript-audio" preload="metadata"></audio>
+                <div class="audio-controls">
+                    <button type="button" class="btn btn-secondary btn-small" id="audio-back-10" title="倒退 10 秒">⏪ 倒退 10 秒</button>
+                    <button type="button" class="btn btn-secondary btn-small" id="audio-play-pause" title="播放/暫停">▶ 播放</button>
+                    <button type="button" class="btn btn-secondary btn-small" id="audio-fwd-10" title="前進 10 秒">⏩ 前進 10 秒</button>
+                    <span id="audio-time" class="audio-time">0:00 / 0:00</span>
+                </div>
+            </div>
             <div id="transcript-detail-body" class="transcript-full"></div>
             <p class="github-hint">
                 逐字稿會同步寫入本專案 <code>docs/transcripts/</code> 並 push 到 GitHub；若已啟用 GitHub Pages（來源：main / docs），可於站上查看。
@@ -367,12 +395,64 @@
                 }).join('');
         }
 
+        const audioWrap = document.getElementById('transcript-audio-wrap');
+        const audioEl = document.getElementById('transcript-audio');
+        const audioBack10 = document.getElementById('audio-back-10');
+        const audioPlayPause = document.getElementById('audio-play-pause');
+        const audioFwd10 = document.getElementById('audio-fwd-10');
+        const audioTimeEl = document.getElementById('audio-time');
+
+        function formatAudioTime(sec) {
+            if (!isFinite(sec) || sec < 0) return '0:00';
+            const m = Math.floor(sec / 60);
+            const s = Math.floor(sec % 60);
+            return m + ':' + (s < 10 ? '0' : '') + s;
+        }
+        function updateAudioTimeDisplay() {
+            const cur = audioEl.currentTime;
+            const dur = audioEl.duration;
+            audioTimeEl.textContent = formatAudioTime(cur) + ' / ' + formatAudioTime(dur);
+        }
+        function updatePlayPauseLabel() {
+            audioPlayPause.textContent = audioEl.paused ? '▶ 播放' : '⏸ 暫停';
+        }
+        (function initAudioControls() {
+            audioEl.addEventListener('timeupdate', updateAudioTimeDisplay);
+            audioEl.addEventListener('durationchange', updateAudioTimeDisplay);
+            audioEl.addEventListener('play', updatePlayPauseLabel);
+            audioEl.addEventListener('pause', updatePlayPauseLabel);
+            audioBack10.addEventListener('click', function() {
+                audioEl.currentTime = Math.max(0, audioEl.currentTime - 10);
+                updateAudioTimeDisplay();
+            });
+            audioFwd10.addEventListener('click', function() {
+                const d = audioEl.duration;
+                if (isFinite(d)) audioEl.currentTime = Math.min(d, audioEl.currentTime + 10);
+                else audioEl.currentTime += 10;
+                updateAudioTimeDisplay();
+            });
+            audioPlayPause.addEventListener('click', function() {
+                if (audioEl.paused) audioEl.play();
+                else audioEl.pause();
+            });
+        })();
+
         async function viewTranscript(id) {
             const res = await fetch('/api/transcripts/' + id);
             const t = await res.json();
             detailTitle.textContent = t.episode_title || '逐字稿';
             detailDate.textContent = t.created_at;
             detailBody.textContent = t.transcript_text || '';
+            if (t.mp3_url) {
+                audioWrap.style.display = 'block';
+                audioEl.src = t.mp3_url;
+                audioEl.load();
+                audioTimeEl.textContent = '0:00 / 0:00';
+                updatePlayPauseLabel();
+            } else {
+                audioWrap.style.display = 'none';
+                audioEl.removeAttribute('src');
+            }
             detailCard.style.display = 'block';
             hideFurigana();
             detailCard.scrollIntoView({ behavior: 'smooth' });

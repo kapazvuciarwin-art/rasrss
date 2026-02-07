@@ -553,7 +553,7 @@ def list_transcripts():
 def get_transcript(tid):
     conn = get_db()
     row = conn.execute(
-        "SELECT id, feed_id, episode_title, episode_url, transcript_text, created_at FROM transcripts WHERE id = ?",
+        "SELECT id, feed_id, episode_title, episode_url, mp3_url, transcript_text, created_at FROM transcripts WHERE id = ?",
         (tid,),
     ).fetchone()
     conn.close()
